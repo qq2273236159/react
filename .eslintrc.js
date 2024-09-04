@@ -17,6 +17,8 @@ module.exports = {
   // Stop ESLint from looking for a configuration file in parent folders
   root: true,
 
+  reportUnusedDisableDirectives: true,
+
   plugins: [
     'babel',
     'ft-flow',
@@ -245,7 +247,7 @@ module.exports = {
       },
     ],
     'no-shadow': ERROR,
-    'no-unused-vars': [ERROR, {args: 'none'}],
+    'no-unused-vars': [ERROR, {args: 'none', ignoreRestSiblings: true}],
     'no-use-before-define': OFF,
     'no-useless-concat': OFF,
     quotes: [ERROR, 'single', {avoidEscape: true, allowTemplateLiterals: true}],
@@ -484,11 +486,17 @@ module.exports = {
       },
     },
     {
-      files: ['packages/react-devtools-extensions/**/*.js'],
+      files: [
+        'packages/react-devtools-extensions/**/*.js',
+        'packages/react-devtools-shared/src/hook.js',
+        'packages/react-devtools-shared/src/backend/console.js',
+        'packages/react-devtools-shared/src/backend/shared/DevToolsComponentStackFrame.js',
+      ],
       globals: {
         __IS_CHROME__: 'readonly',
         __IS_FIREFOX__: 'readonly',
         __IS_EDGE__: 'readonly',
+        __IS_NATIVE__: 'readonly',
         __IS_INTERNAL_VERSION__: 'readonly',
       },
     },
@@ -571,6 +579,7 @@ module.exports = {
     TimeoutID: 'readonly',
     WheelEventHandler: 'readonly',
     FinalizationRegistry: 'readonly',
+    Omit: 'readonly',
 
     spyOnDev: 'readonly',
     spyOnDevAndProd: 'readonly',

@@ -66,8 +66,8 @@ function getTestFlags() {
       ? 'modern'
       : 'classic'
     : __EXPERIMENTAL__
-    ? 'experimental'
-    : 'stable';
+      ? 'experimental'
+      : 'stable';
 
   // Return a proxy so we can throw if you attempt to access a flag that
   // doesn't exist.
@@ -90,18 +90,13 @@ function getTestFlags() {
       shouldUseFizzExternalRuntime: !featureFlags.enableFizzExternalRuntime
         ? false
         : www
-        ? __VARIANT__
-        : __EXPERIMENTAL__,
+          ? __VARIANT__
+          : __EXPERIMENTAL__,
 
       // This is used by useSyncExternalStoresShared-test.js to decide whether
       // to test the shim or the native implementation of useSES.
-      // TODO: It's disabled when enableRefAsProp is on because the JSX
-      // runtime used by our tests is not compatible with older versions of
-      // React. If we want to keep testing this shim after enableRefIsProp is
-      // on everywhere, we'll need to find some other workaround. Maybe by
-      // only using createElement instead of JSX in that test module.
-      enableUseSyncExternalStoreShim:
-        !__VARIANT__ && !featureFlags.enableRefAsProp,
+
+      enableUseSyncExternalStoreShim: !__VARIANT__,
 
       // If there's a naming conflict between scheduler and React feature flags, the
       // React ones take precedence.

@@ -19,18 +19,15 @@ export type Lane = number;
 export type LaneMap<T> = Array<T>;
 
 import {
-  allowConcurrentByDefault,
   enableRetryLaneExpiration,
   enableSchedulingProfiler,
   enableTransitionTracing,
-  enableUnifiedSyncLane,
   enableUpdaterTracking,
   syncLaneExpirationMs,
   transitionLaneExpirationMs,
   retryLaneExpirationMs,
 } from 'shared/ReactFeatureFlags';
 import {isDevToolsPresent} from './ReactFiberDevToolsHook';
-import {ConcurrentUpdatesByDefaultMode, NoMode} from './ReactTypeOfMode';
 import {clz32} from './clz32';
 
 // Lane values below should be kept in sync with getLabelForLane(), used by react-devtools-timeline.
@@ -51,9 +48,8 @@ export const InputContinuousLane: Lane = /*             */ 0b0000000000000000000
 export const DefaultHydrationLane: Lane = /*            */ 0b0000000000000000000000000010000;
 export const DefaultLane: Lane = /*                     */ 0b0000000000000000000000000100000;
 
-export const SyncUpdateLanes: Lane = enableUnifiedSyncLane
-  ? SyncLane | InputContinuousLane | DefaultLane
-  : SyncLane;
+export const SyncUpdateLanes: Lane =
+  SyncLane | InputContinuousLane | DefaultLane;
 
 const TransitionHydrationLane: Lane = /*                */ 0b0000000000000000000000001000000;
 const TransitionLanes: Lanes = /*                       */ 0b0000000001111111111111110000000;
@@ -95,6 +91,14 @@ export const DeferredLane: Lane = /*                    */ 0b1000000000000000000
 // update loops, so it doesn't include hydration lanes or retries.
 export const UpdateLanes: Lanes =
   SyncLane | InputContinuousLane | DefaultLane | TransitionLanes;
+
+export const HydrationLanes =
+  SyncHydrationLane |
+  InputContinuousHydrationLane |
+  DefaultHydrationLane |
+  TransitionHydrationLane |
+  SelectiveHydrationLane |
+  IdleHydrationLane;
 
 // This function is used for the experimental timeline (react-devtools-timeline)
 // It should be kept in sync with the Lanes values above.
@@ -151,11 +155,9 @@ let nextTransitionLane: Lane = TransitionLane1;
 let nextRetryLane: Lane = RetryLane1;
 
 function getHighestPriorityLanes(lanes: Lanes | Lane): Lanes {
-  if (enableUnifiedSyncLane) {
-    const pendingSyncLanes = lanes & SyncUpdateLanes;
-    if (pendingSyncLanes !== 0) {
-      return pendingSyncLanes;
-    }
+  const pendingSyncLanes = lanes & SyncUpdateLanes;
+  if (pendingSyncLanes !== 0) {
+    return pendingSyncLanes;
   }
   switch (getHighestPriorityLane(lanes)) {
     case SyncHydrationLane:
@@ -288,15 +290,55 @@ export function getNextLanes(root: FiberRoot, wipLanes: Lanes): Lanes {
   return nextLanes;
 }
 
+export function getNextLanesToFlushSync(
+  root: FiberRoot,
+  extraLanesToForceSync: Lane | Lanes,
+): Lanes {
+  // Similar to getNextLanes, except instead of choosing the next lanes to work
+  // on based on their priority, it selects all the lanes that have equal or
+  // higher priority than those are given. That way they can be synchronously
+  // rendered in a single batch.
+  //
+  // The main use case is updates scheduled by popstate events, which are
+  // flushed synchronously even though they are transitions.
+  const lanesToFlush = SyncUpdateLanes | extraLanesToForceSync;
+
+  // Early bailout if there's no pending work left.
+  const pendingLanes = root.pendingLanes;
+  if (pendingLanes === NoLanes) {
+    return NoLanes;
+  }
+
+  const suspendedLanes = root.suspendedLanes;
+  const pingedLanes = root.pingedLanes;
+
+  // Remove lanes that are suspended (but not pinged)
+  const unblockedLanes = pendingLanes & ~(suspendedLanes & ~pingedLanes);
+  const unblockedLanesWithMatchingPriority =
+    unblockedLanes & getLanesOfEqualOrHigherPriority(lanesToFlush);
+
+  // If there are matching hydration lanes, we should do those by themselves.
+  // Hydration lanes must never include updates.
+  if (unblockedLanesWithMatchingPriority & HydrationLanes) {
+    return (
+      (unblockedLanesWithMatchingPriority & HydrationLanes) | SyncHydrationLane
+    );
+  }
+
+  if (unblockedLanesWithMatchingPriority) {
+    // Always include the SyncLane as part of the result, even if there's no
+    // pending sync work, to indicate the priority of the entire batch of work
+    // is considered Sync.
+    return unblockedLanesWithMatchingPriority | SyncLane;
+  }
+
+  return NoLanes;
+}
+
 export function getEntangledLanes(root: FiberRoot, renderLanes: Lanes): Lanes {
   let entangledLanes = renderLanes;
 
-  if (
-    allowConcurrentByDefault &&
-    (root.current.mode & ConcurrentUpdatesByDefaultMode) !== NoMode
-  ) {
-    // Do nothing, use the lanes as they were assigned.
-  } else if ((entangledLanes & InputContinuousLane) !== NoLanes) {
+  if ((entangledLanes & InputContinuousLane) !== NoLanes) {
     // When updates are sync by default, we entangle continuous priority updates
     // and default updates, so they render in the same batch. The only reason
     // they use separate lanes is because continuous updates should interrupt
@@ -502,13 +544,6 @@ export function includesOnlyTransitions(lanes: Lanes): boolean {
 }
 
 export function includesBlockingLane(root: FiberRoot, lanes: Lanes): boolean {
-  if (
-    allowConcurrentByDefault &&
-    (root.current.mode & ConcurrentUpdatesByDefaultMode) !== NoMode
-  ) {
-    // Concurrent updates by default always use time slicing.
-    return false;
-  }
   const SyncDefaultLanes =
     InputContinuousHydrationLane |
     InputContinuousLane |
@@ -550,6 +585,14 @@ export function claimNextRetryLane(): Lane {
 
 export function getHighestPriorityLane(lanes: Lanes): Lane {
   return lanes & -lanes;
+}
+
+function getLanesOfEqualOrHigherPriority(lanes: Lane | Lanes): Lanes {
+  // Create a mask with all bits to the right or same as the highest bit.
+  // So if lanes is 0b100, the result would be 0b111.
+  // If lanes is 0b101, the result would be 0b111.
+  const lowestPriorityLaneIndex = 31 - clz32(lanes);
+  return (1 << (lowestPriorityLaneIndex + 1)) - 1;
 }
 
 export function pickArbitraryLane(lanes: Lanes): Lane {
@@ -775,17 +818,6 @@ export function markRootEntangled(root: FiberRoot, entangledLanes: Lanes) {
   }
 }
 
-export function upgradePendingLaneToSync(root: FiberRoot, lane: Lane) {
-  // Since we're upgrading the priority of the given lane, there is now pending
-  // sync work.
-  root.pendingLanes |= SyncLane;
-
-  // Entangle the sync lane with the lane we're upgrading. This means SyncLane
-  // will not be allowed to finish without also finishing the given lane.
-  root.entangledLanes |= SyncLane;
-  root.entanglements[SyncLaneIndex] |= lane;
-}
-
 export function upgradePendingLanesToSync(
   root: FiberRoot,
   lanesToUpgrade: Lanes,
@@ -826,7 +858,7 @@ export function getBumpedLaneForHydration(
   const renderLane = getHighestPriorityLane(renderLanes);
 
   let lane;
-  if (enableUnifiedSyncLane && (renderLane & SyncUpdateLanes) !== NoLane) {
+  if ((renderLane & SyncUpdateLanes) !== NoLane) {
     lane = SyncHydrationLane;
   } else {
     switch (renderLane) {
